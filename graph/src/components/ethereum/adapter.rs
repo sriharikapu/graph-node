@@ -40,6 +40,13 @@ pub enum EthereumContractCallError {
     /// `Token` is not of expected `ParamType`
     #[fail(display = "type mismatch, token {:?} is not of kind {:?}", _0, _1)]
     TypeError(Token, ParamType),
+    #[fail(display = "call error: {}", _0)]
+    CallError(SyncFailure<Web3Error>),
+    #[fail(display = "ABI error: {}", _0)]
+    ABIError(SyncFailure<ABIError>),
+    /// `Token` is not of expected `ParamType`
+    #[fail(display = "Type mismatch, token {:?} is not of kind {:?}", _0, _1)]
+    TypeError(Token, ParamType),
 }
 
 impl From<Web3Error> for EthereumContractCallError {
