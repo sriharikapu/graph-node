@@ -24,6 +24,7 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Mutex;
 use url::Url;
+use futures::sync::mpsc;
 
 use graph::components::forward;
 use graph::prelude::{JsonRpcServer as JsonRpcServerTrait, *};
@@ -35,10 +36,13 @@ use graph_server_http::GraphQLServer as HyperGraphQLServer;
 use graph_server_json_rpc::{subgraph_add_request, JsonRpcServer};
 use graph_store_postgres::{Store as DieselStore, StoreConfig};
 
-fn main() {
+fn main() { //
+    let (shutdown_sender, _shutdown_receiver) = mpsc::channel(1);
     let (panic_logger, _panic_guard) = guarded_logger();
-    register_panic_hook(panic_logger);
-    tokio::run(future::lazy(|| async_main()))
+    let mut runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+
+    register_panic_hook(panic_logger, shutdown_sender);
+    let _result = runtime.block_on(future::lazy(|| async_main()));
 }
 
 fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {

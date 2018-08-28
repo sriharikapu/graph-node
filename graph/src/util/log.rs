@@ -1,4 +1,5 @@
 use backtrace::Backtrace;
+use futures::sync::mpsc::Sender;
 use slog;
 use slog_async;
 use slog_term;
@@ -20,7 +21,7 @@ pub fn guarded_logger() -> (slog::Logger, slog_async::AsyncGuard) {
     (slog::Logger::root(drain.fuse(), o!()), guard)
 }
 
-pub fn register_panic_hook(panic_logger: slog::Logger) {
+pub fn register_panic_hook(panic_logger: slog::Logger, shutdown_sender: Sender<()>) {
     panic::set_hook(Box::new(move |panic_info| {
         let panic_payload = panic_info.payload().downcast_ref::<String>();
         let panic_location = if let Some(location) = panic_info.location() {
@@ -40,8 +41,16 @@ pub fn register_panic_hook(panic_logger: slog::Logger) {
                     error!(panic_logger, "Backtrace";
                     "trace" => format!("{:?}", Backtrace::new()));
                 }
-            }
-            None => (),
+            },
+            None => ()
         }
+
+        // Signal an event loop shutdown
+        shutdown_sender
+            .clone()
+            .try_send(())
+            .map(|_| ())
+            .map_err(|_| ())
+            .expect("Failed to signal shutdown");
     }));
 }
