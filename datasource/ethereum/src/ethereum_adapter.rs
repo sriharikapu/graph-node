@@ -32,6 +32,13 @@ impl<T: web3::Transport> EthereumAdapter<T> {
         self.eth_client.eth().block_number()
     }
 
+    pub fn transaction_receipt(
+        &self,
+        block_hash: H256,
+    ) -> CallResult<Option<TransactionReceipt>, T::Out> {
+        self.eth_client.eth().transaction_receipt(block_hash)
+    }
+
     pub fn sha3(&self, data: &str) -> CallResult<H256, T::Out> {
         self.eth_client.web3().sha3(Bytes::from(data))
     }
