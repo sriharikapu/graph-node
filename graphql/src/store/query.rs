@@ -2,6 +2,7 @@ use graph::prelude::*;
 use graphql_parser::{query as q, schema};
 use schema::ast;
 use std::collections::{BTreeMap, HashMap};
+use std::mem::discriminant;
 
 /// Builds a StoreQuery from GraphQL arguments.
 pub fn build_query(
@@ -101,7 +102,20 @@ fn build_filter_from_object(
 /// Parses a list of GraphQL values into a vector of entity attribute values.
 fn list_values(value: Value) -> Vec<Value> {
     match value {
-        Value::List(values) => values,
+        Value::List(ref values) if !values.is_empty() => {
+            // Check that all values in list are of the same type
+            // let value_type = discriminant(&values[0]);
+            values
+                .into_iter()
+                .map(|value| {
+                    if discriminant(&values[0]) == discriminant(value) {
+                        value.clone()
+                    } else {
+                        panic!("list value contains multiple value types");
+                    }
+                })
+                .collect::<Vec<Value>>()
+        }
         _ => panic!("value is not a list"),
     }
 }
