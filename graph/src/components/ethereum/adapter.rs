@@ -1,9 +1,9 @@
 use ethabi::{Bytes, Error as ABIError, Event, Function, LogParam, ParamType, Token};
-use ethereum_types::{Address, H256};
+use ethereum_types::{Address, H160, H256, U128, U256, U64};
 use failure::SyncFailure;
 use futures::{Future, Stream};
 use web3::error::Error as Web3Error;
-use web3::types::{BlockId, BlockNumber};
+use web3::types::{Block, BlockId, BlockNumber, TransactionReceipt};
 
 /// A request for the state of a contract at a specific block hash and address.
 pub struct EthereumContractStateRequest {
@@ -96,9 +96,68 @@ pub struct EthereumEventSubscription {
 pub struct EthereumEvent {
     pub address: Address,
     pub event_signature: H256,
-    pub block_hash: H256,
+    pub block: EthereumBlock256,
+    pub transaction: EthereumTransaction,
     pub params: Vec<LogParam>,
     pub removed: bool,
+}
+
+#[derive(Debug)]
+pub struct EthereumTransaction {
+    pub transaction_hash: H256,
+    pub block_hash: H256,
+    pub block_number: U256,
+    pub cumulative_gas_used: U256,
+    pub gas_used: U256,
+}
+
+impl From<TransactionReceipt> for EthereumTransaction {
+    fn from(transaction_receipt: TransactionReceipt) -> EthereumTransaction {
+        EthereumTransaction {
+            transaction_hash: transaction_receipt.transaction_hash,
+            block_hash: transaction_receipt.block_hash,
+            block_number: transaction_receipt.block_number,
+            cumulative_gas_used: transaction_receipt.cumulative_gas_used,
+            gas_used: transaction_receipt.gas_used,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct EthereumBlock256 {
+    pub hash: H256,
+    pub parent_hash: H256,
+    pub uncles_hash: H256,
+    pub author: H160,
+    pub state_root: H256,
+    pub transactions_root: H256,
+    pub receipts_root: H256,
+    pub number: U128,
+    pub gas_used: U256,
+    pub gas_limit: U256,
+    pub timestamp: U256,
+    pub difficulty: U256,
+    pub total_difficulty: U256,
+}
+
+impl From<Block<H256>> for EthereumBlock256 {
+    fn from(block: Block<H256>) -> EthereumBlock256 {
+        EthereumBlock256 {
+            hash: block.hash.unwrap(),
+            parent_hash: block.parent_hash,
+            uncles_hash: block.uncles_hash,
+            author: block.author,
+            state_root: block.state_root,
+            transactions_root: block.transactions_root,
+            receipts_root: block.receipts_root,
+            number: block.number.unwrap(),
+            gas_used: block.gas_used,
+            gas_limit: block.gas_limit,
+            timestamp: block.timestamp,
+            difficulty: block.difficulty,
+            total_difficulty: block.total_difficulty,
+        }
+    }
 }
 
 /// Common trait for components that watch and manage access to Ethereum.
