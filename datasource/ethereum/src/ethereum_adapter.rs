@@ -33,10 +33,10 @@ impl<T: web3::Transport> EthereumAdapter<T> {
     }
 
     pub fn transaction_receipt(
-        &self,
+        eth: Eth<T>,
         block_hash: H256,
     ) -> CallResult<Option<TransactionReceipt>, T::Out> {
-        self.eth_client.eth().transaction_receipt(block_hash)
+        eth.transaction_receipt(block_hash)
     }
 
     pub fn sha3(&self, data: &str) -> CallResult<H256, T::Out> {
@@ -51,6 +51,10 @@ impl<T: web3::Transport> EthereumAdapter<T> {
             .topics(Some(vec![subscription.event.signature()]), None, None, None)
             .build();
         self.eth_client.eth_filter().create_logs_filter(eth_filter)
+    }
+
+    pub fn blocks_filter(&self) -> CreateFilter<T, H256> {
+        self.eth_client.eth_filter().create_blocks_filter()
     }
 
     pub fn block(eth: Eth<T>, block_id: BlockId) -> CallResult<Block<H256>, T::Out> {
@@ -126,12 +130,28 @@ impl<T: web3::Transport + Send + Sync + 'static> EthereumAdapterTrait for Ethere
                 }),
         )
     }
+    fn subscibe_to_blocks_events(
+        &mut self,
+        subscription: EthereumEventSubscription,
+    ) -> Box<Stream<Item = EthereumEvent, Error = EthereumSubscriptionError>> {
+        let eth_client = self.eth_client.clone();
+        Box::new(
+            self.blocks_filter()
+                .map_err(EthereumSubscriptionError::from)
+                .map(| block_filter | {
+                    let filter = try_ready!(block_filter.poll());
+                    
 
+                })
+        )
+    }
     fn subscribe_to_event(
         &mut self,
         subscription: EthereumEventSubscription,
     ) -> Box<Stream<Item = EthereumEvent, Error = EthereumSubscriptionError>> {
         let event = subscription.event.clone();
+        // Obtain a handle on the Ethereum client
+        let eth_client = self.eth_client.clone();
         Box::new(
             self.event_filter(subscription)
                 .map_err(EthereumSubscriptionError::from)
@@ -154,12 +174,27 @@ impl<T: web3::Transport + Send + Sync + 'static> EthereumAdapterTrait for Ethere
                             data: log.clone().data.0,
                         })
                         .map_err(EthereumSubscriptionError::from)
-                        .map(|log_data| (log, log_data))
+                        .for_each()
+                        .map(|log_data| {
+                            let block = Self::block(
+                                eth_client.eth(),
+                                BlockId::Hash(log.block_hash.unwrap()),
+                            ).wait()
+                                .unwrap();
+                            let transaction = Self::transaction_receipt(
+                                eth_client.eth(),
+                                log.block_hash.unwrap(),
+                            ).wait()
+                                .unwrap()
+                                .unwrap();
+                            (log, log_data, block, transaction)
+                        })
                 })
-                .map(move |(log, log_data)| EthereumEvent {
+                .map(move |(log, log_data, block, transaction)| EthereumEvent {
                     address: log.address,
                     event_signature: log.topics[0],
-                    block_hash: log.block_hash.unwrap(),
+                    block: EthereumBlock256::from(block),
+                    transaction: EthereumTransaction::from(transaction),
                     params: log_data.params,
                     removed: log.is_removed(),
                 }),
