@@ -331,15 +331,89 @@ pub(crate) type BigInt = Uint8Array;
 pub(crate) type AscAddress = Uint8Array;
 pub(crate) type AscH160 = Uint8Array;
 pub(crate) type AscH256 = Uint8Array;
+pub(crate) type AscH2048 = Uint64Array;
+pub(crate) type AscU64 = Uint64Array;
+pub(crate) type AscU128 = Uint64Array;
+pub(crate) type AscU160 = Uint64Array;
 pub(crate) type AscU256 = Uint64Array;
 
 pub(crate) type AscLogParamArray = Array<AscPtr<AscLogParam>>;
 
 #[repr(C)]
+pub(crate) struct AscTransactionReceipt {
+    pub transaction_hash: AscPtr<AscH256>,
+    pub transaction_index: AscPtr<AscU128>,
+    pub block_hash: AscPtr<AscH256>,
+    pub block_number: AscPtr<AscU256>,
+    pub cumulative_gas_used: AscPtr<AscU256>,
+    pub gas_used: AscPtr<AscU256>,
+    pub contract_address: AscPtr<AscU160>,
+    pub logs: AscPtr<AscLogParamArray>,
+    pub status: AscPtr<u32>,
+}
+
+impl AscType for AscTransactionReceipt {}
+
+#[repr(C)]
+pub(crate) struct AscBlock256 {
+    pub hash: AscPtr<AscH256>,
+    pub parent_hash: AscPtr<AscH256>,
+    pub uncles_hash: AscPtr<AscH256>,
+    pub author: AscPtr<AscH160>,
+    pub state_root: AscPtr<AscH256>,
+    pub transactions_root: AscPtr<AscH256>,
+    pub receipts_root: AscPtr<AscH256>,
+    pub number: AscPtr<AscU128>,
+    pub gas_used: AscPtr<AscU256>,
+    pub gas_limit: AscPtr<AscU256>,
+    pub extra_data: Bytes,
+    pub timestamp: AscPtr<AscU256>,
+    pub difficulty: AscPtr<AscU256>,
+    pub total_difficulty: AscPtr<AscU256>,
+    pub seal_fields: Vec<Bytes>,
+    pub uncles: Vec<AscPtr<AscH256>>,
+    pub transactions: Array<AscPtr<AscH256>>,
+    pub size: AscPtr<AscU256>,
+}
+
+impl AscType for AscBlock256 {}
+
+#[repr(C)]
+pub(crate) struct AscEthereumTransaction {
+    pub transaction_hash: AscPtr<AscH256>,
+    pub block_hash: AscPtr<AscH256>,
+    pub block_number: AscPtr<AscU256>,
+    pub cumulative_gas_used: AscPtr<AscU256>,
+    pub gas_used: AscPtr<AscU256>,
+}
+
+impl AscType for AscEthereumTransaction {}
+
+#[repr(C)]
+pub(crate) struct AscEthereumBlock256 {
+    pub hash: AscPtr<AscH256>,
+    pub parent_hash: AscPtr<AscH256>,
+    pub uncles_hash: AscPtr<AscH256>,
+    pub author: AscPtr<AscH160>,
+    pub state_root: AscPtr<AscH256>,
+    pub transactions_root: AscPtr<AscH256>,
+    pub receipts_root: AscPtr<AscH256>,
+    pub number: AscPtr<AscU128>,
+    pub gas_used: AscPtr<AscU256>,
+    pub gas_limit: AscPtr<AscU256>,
+    pub timestamp: AscPtr<AscU256>,
+    pub difficulty: AscPtr<AscU256>,
+    pub total_difficulty: AscPtr<AscU256>,
+}
+
+impl AscType for AscEthereumBlock256 {}
+
+#[repr(C)]
 pub(crate) struct AscEthereumEvent {
     pub address: AscPtr<AscAddress>,
     pub event_signature: AscPtr<AscH256>,
-    pub block_hash: AscPtr<AscH256>,
+    pub block: AscPtr<AscEthereumBlock256>,
+    pub transaction: AscPtr<AscEthereumTransaction>,
     pub params: AscPtr<AscLogParamArray>,
 }
 

@@ -2,11 +2,13 @@ use ethabi;
 use ethereum_types;
 use graph::serde_json;
 
-use graph::components::ethereum::EthereumEvent;
+use graph::components::ethereum::{EthereumBlock256, EthereumEvent, EthereumTransaction};
 use graph::data::store;
 
 use asc_abi::class::*;
 use asc_abi::{AscHeap, AscPtr, FromAscObj, ToAscObj};
+
+use web3;
 
 use UnresolvedContractCall;
 
@@ -48,6 +50,42 @@ impl ToAscObj<ArrayBuffer<u8>> for ethereum_types::H256 {
 
 impl ToAscObj<Uint8Array> for ethereum_types::H256 {
     fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> Uint8Array {
+        self.0.to_asc_obj(heap)
+    }
+}
+
+impl ToAscObj<ArrayBuffer<u64>> for ethereum_types::U64 {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> ArrayBuffer<u64> {
+        self.0.to_asc_obj(heap)
+    }
+}
+
+impl FromAscObj<ArrayBuffer<u64>> for ethereum_types::U64 {
+    fn from_asc_obj<H: AscHeap>(array_buffer: ArrayBuffer<u64>, heap: &H) -> Self {
+        ethereum_types::U64(<[u64; 1]>::from_asc_obj(array_buffer, heap))
+    }
+}
+
+impl ToAscObj<Uint64Array> for ethereum_types::U64 {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> Uint64Array {
+        self.0.to_asc_obj(heap)
+    }
+}
+
+impl ToAscObj<ArrayBuffer<u64>> for ethereum_types::U128 {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> ArrayBuffer<u64> {
+        self.0.to_asc_obj(heap)
+    }
+}
+
+impl FromAscObj<ArrayBuffer<u64>> for ethereum_types::U128 {
+    fn from_asc_obj<H: AscHeap>(array_buffer: ArrayBuffer<u64>, heap: &H) -> Self {
+        ethereum_types::U128(<[u64; 2]>::from_asc_obj(array_buffer, heap))
+    }
+}
+
+impl ToAscObj<Uint64Array> for ethereum_types::U128 {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> Uint64Array {
         self.0.to_asc_obj(heap)
     }
 }
@@ -212,12 +250,86 @@ impl ToAscObj<AscEnum<JsonValueKind>> for serde_json::Value {
     }
 }
 
+impl ToAscObj<AscTransactionReceipt> for web3::types::TransactionReceipt {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> AscTransactionReceipt {
+        AscTransactionReceipt {
+            transaction_hash: heap.asc_new(&self.transaction_hash),
+            transaction_index: heap.asc_new(&self.transaction_index),
+            block_hash: heap.asc_new(&self.block_hash),
+            block_number: heap.asc_new(&self.block_number),
+            cumulative_gas_used: heap.asc_new(&self.cumulative_gas_used),
+            gas_used: heap.asc_new(&self.gas_used),
+            contract_address: heap.asc_new(&self.contract_address),
+            logs: heap.asc_new(&self.logs.as_slice()),
+            status: heap.asc_new(&self.status),
+        }
+    }
+}
+
+impl ToAscObj<AscBlock256> for web3::types::Block<ethereum_types::H256> {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> AscBlock256 {
+        AscBlock256 {
+            hash: heap.asc_new(&self.hash),
+            parent_hash: heap.asc_new(&self.parent_hash),
+            uncles_hash: heap.asc_new(&self.uncles_hash),
+            author: heap.asc_new(&self.author),
+            state_root: heap.asc_new(&self.state_root),
+            transactions_root: heap.asc_new(&self.transactions_root),
+            receipts_root: heap.asc_new(&self.receipts_root),
+            number: heap.asc_new(&self.number),
+            gas_used: heap.asc_new(&self.gas_used),
+            gas_limit: heap.asc_new(&self.gas_limit),
+            extra_data: heap.asc_new(&self.extra_data),
+            timestamp: heap.asc_new(&self.timestamp),
+            difficulty: heap.asc_new(&self.difficulty),
+            total_difficulty: heap.asc_new(&self.total_difficulty),
+            seal_fields: heap.asc_new(&self.seal_fields.as_slice()),
+            uncles: heap.asc_new(&self.uncles.as_slice()),
+            transactions: heap.asc_new(&self.transactions),
+            size: heap.asc_new(&self.size),
+        }
+    }
+}
+
+impl ToAscObj<AscEthereumTransaction> for EthereumTransaction {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> AscEthereumTransaction {
+        AscEthereumTransaction {
+            transaction_hash: heap.asc_new(&self.transaction_hash),
+            block_hash: heap.asc_new(&self.block_hash),
+            block_number: heap.asc_new(&self.block_number),
+            cumulative_gas_used: heap.asc_new(&self.cumulative_gas_used),
+            gas_used: heap.asc_new(&self.gas_used),
+        }
+    }
+}
+
+impl ToAscObj<AscEthereumBlock256> for EthereumBlock256 {
+    fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> AscEthereumBlock256 {
+        AscEthereumBlock256 {
+            hash: heap.asc_new(&self.hash),
+            parent_hash: heap.asc_new(&self.parent_hash),
+            uncles_hash: heap.asc_new(&self.uncles_hash),
+            author: heap.asc_new(&self.author),
+            state_root: heap.asc_new(&self.state_root),
+            transactions_root: heap.asc_new(&self.transactions_root),
+            receipts_root: heap.asc_new(&self.receipts_root),
+            number: heap.asc_new(&self.number),
+            gas_used: heap.asc_new(&self.gas_used),
+            gas_limit: heap.asc_new(&self.gas_limit),
+            timestamp: heap.asc_new(&self.timestamp),
+            difficulty: heap.asc_new(&self.difficulty),
+            total_difficulty: heap.asc_new(&self.total_difficulty),
+        }
+    }
+}
+
 impl ToAscObj<AscEthereumEvent> for EthereumEvent {
     fn to_asc_obj<H: AscHeap>(&self, heap: &H) -> AscEthereumEvent {
         AscEthereumEvent {
             address: heap.asc_new(&self.address),
             event_signature: heap.asc_new(&self.event_signature),
-            block_hash: heap.asc_new(&self.block_hash),
+            block: heap.asc_new(&self.block),
+            transaction: heap.asc_new(&self.transaction),
             params: heap.asc_new(self.params.as_slice()),
         }
     }

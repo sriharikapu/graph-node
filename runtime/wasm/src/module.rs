@@ -181,7 +181,7 @@ where
     }
 
     pub fn handle_ethereum_event(&mut self, handler_name: &str, event: EthereumEvent) {
-        self.externals.block_hash = event.block_hash.clone();
+        self.externals.block_hash = event.block.hash.clone();
         self.module
             .invoke_export(
                 handler_name,

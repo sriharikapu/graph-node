@@ -225,7 +225,7 @@ impl RuntimeHost {
 
                 if event.removed {
                     info!(event_logger, "Event removed";
-                          "block" => event.block_hash.to_string());
+                          "block" => event.block.hash.to_string());
                 } else {
                     let event_handler = data_source
                         .mapping
