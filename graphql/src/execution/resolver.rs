@@ -1,6 +1,7 @@
 use graphql_parser::{query as q, schema as s};
 use std::collections::HashMap;
 
+use graph::prelude::QueryExecutionError;
 use prelude::*;
 
 /// A GraphQL resolver that can resolve entities, enum values, scalar types and interfaces/unions.
@@ -13,7 +14,7 @@ pub trait Resolver: Clone {
         field_definition: &s::Field,
         object_type: &s::ObjectType,
         arguments: &HashMap<&q::Name, q::Value>,
-    ) -> q::Value;
+    ) -> Result<q::Value, QueryExecutionError>;
 
     /// Resolves an entity referenced by a parent object.
     fn resolve_object(
@@ -23,7 +24,7 @@ pub trait Resolver: Clone {
         field_definition: &s::Field,
         object_type: &s::ObjectType,
         arguments: &HashMap<&q::Name, q::Value>,
-    ) -> q::Value;
+    ) -> Result<q::Value, QueryExecutionError>;
 
     /// Resolves an enum value for a given enum type.
     fn resolve_enum_value(&self, enum_type: &s::EnumType, value: Option<&q::Value>) -> q::Value {

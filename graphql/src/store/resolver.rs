@@ -4,7 +4,7 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use graph::components::store::*;
-use graph::prelude::{slog::*, BasicStore, Value};
+use graph::prelude::*;
 
 use prelude::*;
 use query::ast as qast;
@@ -185,7 +185,7 @@ impl Resolver for StoreResolver {
         field_definition: &s::Field,
         object_type: &s::ObjectType,
         arguments: &HashMap<&q::Name, q::Value>,
-    ) -> q::Value {
+    ) -> Result<q::Value, QueryExecutionError> {
         let mut query = build_query(&object_type, arguments);
 
         // Add matching filter for derived fields
@@ -199,7 +199,7 @@ impl Resolver for StoreResolver {
             && parent.is_some()
             && Self::references_field_is_empty(parent, &field_definition.name)
         {
-            return q::Value::List(vec![]);
+            return Ok(q::Value::List(vec![]));
         }
 
         // Add matching filter for reference fields
@@ -208,17 +208,14 @@ impl Resolver for StoreResolver {
         }
 
         let store = self.store.lock().unwrap();
-        store
-            .find(query)
-            .map(|entities| {
-                q::Value::List(
-                    entities
-                        .into_iter()
-                        .map(|e| e.into())
-                        .collect::<Vec<q::Value>>(),
-                )
-            })
-            .unwrap_or(q::Value::Null)
+        store.find(query).map(|entities| {
+            q::Value::List(
+                entities
+                    .into_iter()
+                    .map(|e| e.into())
+                    .collect::<Vec<q::Value>>(),
+            )
+        })
     }
 
     fn resolve_object(
@@ -228,7 +225,7 @@ impl Resolver for StoreResolver {
         field_definition: &s::Field,
         object_type: &s::ObjectType,
         arguments: &HashMap<&q::Name, q::Value>,
-    ) -> q::Value {
+    ) -> Result<q::Value, QueryExecutionError> {
         let id = arguments.get(&"id".to_string()).and_then(|id| match id {
             q::Value::String(s) => Some(s),
             _ => None,
@@ -245,8 +242,7 @@ impl Resolver for StoreResolver {
                     entity: object_type.name.to_owned(),
                     id: id.to_owned(),
                 })
-                .map(|entity| entity.into())
-                .unwrap_or(q::Value::Null);
+                .map(|entity| entity.into());
         }
 
         match parent {
@@ -263,9 +259,8 @@ impl Resolver for StoreResolver {
                         entity: object_type.name.to_owned(),
                         id: id.to_owned(),
                     })
-                    .map(|entity| entity.into())
-                    .unwrap_or(q::Value::Null),
-                _ => q::Value::Null,
+                    .map(|entity| entity.into()),
+                _ => Err(QueryExecutionError::ObjectFieldError),
             },
             _ => {
                 let mut query = build_query(&object_type, arguments);
@@ -280,18 +275,13 @@ impl Resolver for StoreResolver {
 
                 query.range = Some(StoreRange { first: 1, skip: 0 });
 
-                self.store
-                    .lock()
-                    .unwrap()
-                    .find(query)
-                    .map(|entities| {
-                        entities
-                            .into_iter()
-                            .next()
-                            .map(|entity| entity.into())
-                            .unwrap_or(q::Value::Null)
-                    })
-                    .unwrap_or(q::Value::Null)
+                self.store.lock().unwrap().find(query).map(|entities| {
+                    entities
+                        .into_iter()
+                        .next()
+                        .map(|entity| entity.into())
+                        .unwrap_or(q::Value::Null)
+                })
             }
         }
     }
