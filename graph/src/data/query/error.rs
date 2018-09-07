@@ -13,12 +13,17 @@ pub enum QueryExecutionError {
     NotSupported(String),
     NoRootQueryObjectType,
     ResolveEntityError(Pos, String),
+    ResolveListError,
     NonNullError(Pos, String),
     ListValueError(Pos, String),
     NamedTypeError(String),
+    ObjectFieldError,
     AbstractTypeError(String),
     InvalidArgumentError(Pos, String, q::Value),
     MissingArgumentError(Pos, String),
+    StoreQueryError(String),
+    FilterNotSupportedError(String, String),
+    //    ExecutionErrorList(Vec<QueryExecutionError>),
 }
 
 impl Error for QueryExecutionError {
@@ -54,6 +59,7 @@ impl fmt::Display for QueryExecutionError {
             QueryExecutionError::NamedTypeError(s) => {
                 write!(f, "Failed to resolve named type: {}", s)
             }
+            QueryExecutionError::ObjectFieldError => write!(f, "Object field contains 0 types"),
             QueryExecutionError::AbstractTypeError(s) => {
                 write!(f, "Failed to resolve abstract type: {}", s)
             }
@@ -63,7 +69,24 @@ impl fmt::Display for QueryExecutionError {
             QueryExecutionError::MissingArgumentError(_, s) => {
                 write!(f, "No value provided for required argument: {}", s)
             }
+            QueryExecutionError::StoreQueryError(s) => {
+                write!(f, "Failed to resolve store query, error: {}", s)
+            }
+            QueryExecutionError::FilterNotSupportedError(value, filter) => write!(
+                f,
+                "Value does not support this filter, value: {}, filter: {}",
+                value, filter
+            ),
+            QueryExecutionError::ResolveListError => {
+                write!(f, "Failed to resolve named type within list type")
+            }
         }
+    }
+}
+
+impl From<QueryExecutionError> for Vec<QueryExecutionError> {
+    fn from(e: QueryExecutionError) -> Self {
+        vec![e]
     }
 }
 
