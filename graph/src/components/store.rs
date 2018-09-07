@@ -1,6 +1,7 @@
 use ethereum_types::H256;
 use futures::Stream;
 
+use data::query::QueryExecutionError;
 use data::store::*;
 use std::fmt;
 
@@ -122,7 +123,7 @@ impl fmt::Display for EventSource {
 /// Common trait for store implementations that don't require interaction with the system.
 pub trait BasicStore: Send {
     /// Looks up an entity using the given store key.
-    fn get(&self, key: StoreKey) -> Result<Entity, ()>;
+    fn get(&self, key: StoreKey) -> Result<Entity, QueryExecutionError>;
 
     /// Updates an entity using the given store key and entity data.
     fn set(&mut self, key: StoreKey, entity: Entity, event_source: EventSource) -> Result<(), ()>;
@@ -131,7 +132,7 @@ pub trait BasicStore: Send {
     fn delete(&mut self, key: StoreKey, event_source: EventSource) -> Result<(), ()>;
 
     /// Queries the store for entities that match the store query.
-    fn find(&self, query: StoreQuery) -> Result<Vec<Entity>, ()>;
+    fn find(&self, query: StoreQuery) -> Result<Vec<Entity>, QueryExecutionError>;
 }
 
 /// Common trait for store implementations.
