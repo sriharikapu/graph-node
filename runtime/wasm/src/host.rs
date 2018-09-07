@@ -256,7 +256,7 @@ impl RuntimeHostTrait for RuntimeHost {
     }
 
     fn process_event(
-        &mut self,
+        &self,
         event: EthereumEvent,
     ) -> Box<Future<Item = (), Error = Error> + Send> {
         let (sender, receiver) = oneshot::channel();

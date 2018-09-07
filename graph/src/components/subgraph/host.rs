@@ -16,7 +16,7 @@ pub enum RuntimeHostEvent {
 }
 
 /// Common trait for runtime host implementations.
-pub trait RuntimeHost: EventProducer<RuntimeHostEvent> + Send {
+pub trait RuntimeHost: EventProducer<RuntimeHostEvent> + Send + Sync {
     /// The subgraph definition the runtime is for.
     fn subgraph_manifest(&self) -> &SubgraphManifest;
 
@@ -27,7 +27,7 @@ pub trait RuntimeHost: EventProducer<RuntimeHostEvent> + Send {
     /// Some events provided may not match the event filter (see above).
     /// Runtime hosts should ignore events they are not interested in.
     fn process_event(
-        &mut self,
+        &self,
         event: EthereumEvent,
     ) -> Box<Future<Item = (), Error = Error> + Send>;
 }

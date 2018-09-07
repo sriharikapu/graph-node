@@ -1,6 +1,7 @@
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use web3::types::Block;
 use web3::types::Transaction;
 
@@ -142,7 +143,7 @@ impl RuntimeManager where {
                             }
 
                             // Add the new hosts to the list of managed runtime hosts
-                            runtime_hosts_by_subgraph.insert(manifest.id, new_hosts);
+                            runtime_hosts_by_subgraph.insert(manifest.id, Arc::new(RwLock::new(new_hosts)));
                         }
                         EventType::Subgraph(SubgraphProviderEvent::SubgraphRemoved(id)) => {
                             // Destroy all runtime hosts for this subgraph; this will
@@ -150,16 +151,16 @@ impl RuntimeManager where {
                             runtime_hosts_by_subgraph.remove(&id);
                         }
                         EventType::HeadBlock(_) => {
-                            for (subgraph_id, runtime_hosts) in runtime_hosts_by_subgraph.iter_mut()
-                            {
-                                handle_head_block_update(
-                                    logger.clone(),
-                                    store.clone(),
-                                    eth_adapter.clone(),
-                                    SubgraphId(subgraph_id.to_owned()),
-                                    runtime_hosts,
-                                ).unwrap();
-                            }
+                            stream::iter_ok(runtime_hosts_by_subgraph.iter())
+                                .for_each(|(subgraph_id, runtime_hosts)| {
+                                    handle_head_block_update(
+                                        logger.clone(),
+                                        store.clone(),
+                                        eth_adapter.clone(),
+                                        SubgraphId(subgraph_id.to_owned()),
+                                        runtime_hosts.to_owned(),
+                                    )
+                                }).wait().unwrap(); // TODO wait
                         }
                     }
 
@@ -184,8 +185,8 @@ fn handle_head_block_update<S, E, H>(
     store: Arc<Mutex<S>>,
     eth_adapter: Arc<Mutex<E>>,
     subgraph_id: SubgraphId,
-    runtime_hosts: &mut [H],
-) -> Result<(), Error>
+    runtime_hosts: Arc<RwLock<Vec<H>>>,
+) -> impl Future<Item=(), Error=Error>
 where
     S: Store + 'static,
     E: EthereumAdapter,
@@ -200,19 +201,21 @@ where
     );
 
     // Create an event filter that will match any event relevant to this subgraph
-    let event_filter = runtime_hosts
+    let event_filter = runtime_hosts.read().unwrap()
         .iter()
         .map(|host| host.event_filter())
         .sum::<EthereumEventFilter>();
 
-    loop {
+    future::loop_fn((), move |()| -> Box<Future<Item=_,Error=_>> {
+        let runtime_hosts = runtime_hosts.clone();
+
         // Get pointers from database for comparison
         let head_ptr = store
             .lock()
             .unwrap()
-            .head_block_ptr()?
+            .head_block_ptr().unwrap()
             .expect("should not receive head block update before head block pointer is set");
-        let subgraph_ptr = store.lock().unwrap().block_ptr(subgraph_id.clone())?;
+        let subgraph_ptr = store.lock().unwrap().block_ptr(subgraph_id.clone()).unwrap();
 
         debug!(logger, "head_ptr = {:?}", head_ptr);
         debug!(logger, "subgraph_ptr = {:?}", subgraph_ptr);
@@ -220,7 +223,7 @@ where
         // Only continue if the subgraph block ptr is behind the head block ptr.
         // subgraph_ptr > head_ptr shouldn't happen, but if it does, it's safest to just stop.
         if subgraph_ptr.number >= head_ptr.number {
-            break Ok(());
+            return Box::new(future::ok(future::Loop::Break(())));
         }
 
         // Subgraph ptr is behind head ptr.
@@ -229,8 +232,10 @@ where
         enum Step {
             ToParent,                               // backwards one block
             ToDescendants(Vec<Block<Transaction>>), // forwards, processing one or more blocks
+            Restart, // restart outer loop, try again
+            Exit, // exit loop successfully
         }
-        let step = {
+        let step_future: Box<Future<Item=_,Error=_>> = {
             // We will use a different approach to deciding the step direction depending on how far
             // the subgraph ptr is behind the head ptr.
             //
@@ -265,109 +270,120 @@ where
                 // This allows us to ask the node: does subgraph_ptr point to a block that was
                 // permanently accepted into the main chain, or does it point to a block that was
                 // uncled?
-                let is_on_main_chain = eth_adapter
+                Box::new(eth_adapter
                     .lock()
                     .unwrap()
                     .is_on_main_chain(subgraph_ptr)
-                    .wait()?;
-                if is_on_main_chain {
-                    // The subgraph ptr points to a block on the main chain.
-                    // This means that the last block we processed does not need to be reverted.
-                    // Therefore, our direction of travel will be forward, towards the chain head.
+                    .and_then(move |is_on_main_chain| -> Box<Future<Item=_,Error=_>> {
+                        if is_on_main_chain {
+                            // The subgraph ptr points to a block on the main chain.
+                            // This means that the last block we processed does not need to be
+                            // reverted.
+                            // Therefore, our direction of travel will be forward, towards the
+                            // chain head.
 
-                    // As an optimization, instead of advancing one block, we will use an Ethereum
-                    // RPC call to find the first few blocks between the subgraph ptr and the reorg
-                    // threshold that has event(s) we are interested in.
-                    // Note that we use block numbers here.
-                    // This is an artifact of Ethereum RPC limitations.
-                    // It is only safe to use block numbers because we are beyond the reorg
-                    // threshold.
+                            // As an optimization, instead of advancing one block, we will use an
+                            // Ethereum RPC call to find the first few blocks between the subgraph
+                            // ptr and the reorg threshold that has event(s) we are interested in.
+                            // Note that we use block numbers here.
+                            // This is an artifact of Ethereum RPC limitations.
+                            // It is only safe to use block numbers because we are beyond the reorg
+                            // threshold.
 
-                    // Start with first block after subgraph ptr
-                    let from = subgraph_ptr.number + 1;
+                            // Start with first block after subgraph ptr
+                            let from = subgraph_ptr.number + 1;
 
-                    // End just prior to reorg threshold.
-                    // It isn't safe to go any farther due to race conditions.
-                    let to = head_ptr.number - REORG_THRESHOLD;
+                            // End just prior to reorg threshold.
+                            // It isn't safe to go any farther due to race conditions.
+                            let to = head_ptr.number - REORG_THRESHOLD;
 
-                    debug!(logger, "Finding next blocks with relevant events...");
-                    let descendant_ptrs = eth_adapter
-                        .lock()
-                        .unwrap()
-                        .find_first_blocks_with_events(from, to, event_filter.clone())
-                        .wait()?;
-                    debug!(logger, "Done finding next blocks.");
+                            debug!(logger, "Finding next blocks with relevant events...");
+                            Box::new(
+                            eth_adapter
+                                .lock()
+                                .unwrap()
+                                .find_first_blocks_with_events(from, to, event_filter.clone())
+                                .and_then(|descendant_ptrs| -> Box<Future<Item=_,Error=_>> {
+                                    debug!(logger, "Done finding next blocks.");
 
-                    if descendant_ptrs.is_empty() {
-                        // No matching events in range.
-                        // Therefore, we can update the subgraph ptr without any changes to the
-                        // entity data.
+                                    if descendant_ptrs.is_empty() {
+                                        // No matching events in range.
+                                        // Therefore, we can update the subgraph ptr without any
+                                        // changes to the entity data.
 
-                        // We need to look up what block hash corresponds to the block number
-                        // `to`.
-                        // Again, this is only safe from race conditions due to being beyond
-                        // the reorg threshold.
-                        let new_ptr = eth_adapter
-                            .lock()
-                            .unwrap()
-                            .block_by_number(to)
-                            .wait()?
-                            .into();
+                                        // We need to look up what block hash corresponds to the
+                                        // block number `to`.
+                                        // Again, this is only safe from race conditions due to
+                                        // being beyond the reorg threshold.
+                                        Box::new(eth_adapter
+                                            .lock()
+                                            .unwrap()
+                                            .block_by_number(to)
+                                            .and_then(|new_block| {
+                                                let new_ptr = new_block.into();
 
-                        store.lock().unwrap().set_block_ptr_with_no_changes(
-                            subgraph_id.clone(),
-                            subgraph_ptr,
-                            new_ptr,
-                        )?;
+                                                store.lock().unwrap().set_block_ptr_with_no_changes(
+                                                    subgraph_id.clone(),
+                                                    subgraph_ptr,
+                                                    new_ptr,
+                                                ).unwrap();
 
-                        // There were no events to process in this case, so we have already
-                        // completed the subgraph ptr step.
-                        // Continue outer loop.
-                        continue;
-                    } else {
-                        // The next few interesting blocks are at descendant_ptrs.
-                        // In particular, descendant_ptrs is a list of all blocks between
-                        // subgraph_ptr and descendant_ptrs.last() that contain relevant events.
-                        // This will allow us to advance the subgraph_ptr to descendant_ptrs.last()
-                        // while being confident that we did not miss any relevant events.
+                                                // There were no events to process in this case, so
+                                                // we have already completed the subgraph ptr step.
+                                                // Continue outer loop.
+                                                future::ok(Step::Restart)
+                                            }))
+                                    } else {
+                                        // The next few interesting blocks are at descendant_ptrs.
+                                        // In particular, descendant_ptrs is a list of all blocks
+                                        // between subgraph_ptr and descendant_ptrs.last() that
+                                        // contain relevant events.
+                                        // This will allow us to advance the subgraph_ptr to
+                                        // descendant_ptrs.last() while being confident that we did
+                                        // not miss any relevant events.
 
-                        // Load the blocks
-                        debug!(
-                            logger,
-                            "Found {} block(s) with events. Loading blocks...",
-                            descendant_ptrs.len()
-                        );
-                        let descendant_blocks = stream::futures_ordered(
-                            descendant_ptrs.into_iter().map(|descendant_ptr| {
-                                let eth_adapter = eth_adapter.clone();
-                                let store = store.clone();
+                                        // Load the blocks
+                                        debug!(
+                                            logger,
+                                            "Found {} block(s) with events. Loading blocks...",
+                                            descendant_ptrs.len()
+                                        );
+                                        Box::new(stream::futures_ordered(
+                                            descendant_ptrs.into_iter().map(|descendant_ptr| {
+                                                let eth_adapter = eth_adapter.clone();
+                                                let store = store.clone();
 
-                                // Try locally first. Otherwise, get block from Ethereum node.
-                                let block_result = store.lock().unwrap().block(descendant_ptr.hash);
-                                future::result(block_result).and_then(
-                                    move |block_from_store| -> Box<Future<Item = _, Error = _>> {
-                                        if let Some(block) = block_from_store {
-                                            Box::new(future::ok(block))
-                                        } else {
-                                            eth_adapter
-                                                .lock()
-                                                .unwrap()
-                                                .block_by_hash(descendant_ptr.hash)
-                                        }
-                                    },
-                                )
-                            }),
-                        ).collect()
-                            .wait()?;
-
-                        // Proceed to those blocks
-                        Step::ToDescendants(descendant_blocks)
-                    }
-                } else {
-                    // The subgraph ptr points to a block that was uncled.
-                    // We need to revert this block.
-                    Step::ToParent
-                }
+                                                // Try locally first. Otherwise, get block from Ethereum node.
+                                                let block_result = store.lock().unwrap().block(descendant_ptr.hash);
+                                                future::result(block_result).and_then(
+                                                    move |block_from_store| -> Box<Future<Item = _, Error = _>> {
+                                                        if let Some(block) = block_from_store {
+                                                            Box::new(future::ok(block))
+                                                        } else {
+                                                            eth_adapter
+                                                                .lock()
+                                                                .unwrap()
+                                                                .block_by_hash(descendant_ptr.hash)
+                                                        }
+                                                    },
+                                                )
+                                            }),
+                                        ).collect()
+                                            .map(|descendant_blocks| {
+                                                // Proceed to those blocks
+                                                Step::ToDescendants(descendant_blocks)
+                                            })
+                                        )
+                                    }
+                                })
+                            )
+                        } else {
+                            // The subgraph ptr points to a block that was uncled.
+                            // We need to revert this block.
+                            Box::new(future::ok(Step::ToParent))
+                        }
+                    })
+                )
             } else {
                 // The subgraph ptr is not too far behind the head ptr.
                 // This means a few things.
@@ -394,7 +410,7 @@ where
                 // Precondition: subgraph_ptr.number < head_ptr.number
                 // Walk back to one block short of subgraph_ptr.number
                 let offset = head_ptr.number - subgraph_ptr.number - 1;
-                let ancestor_block_opt = store.lock().unwrap().ancestor_block(head_ptr, offset)?;
+                let ancestor_block_opt = store.lock().unwrap().ancestor_block(head_ptr, offset).unwrap();
                 match ancestor_block_opt {
                     None => {
                         // Block is missing in the block store.
@@ -402,7 +418,7 @@ where
                         // been updated since we retrieved the head ptr, and the block store has
                         // been garbage collected.
                         // It's easiest to start over at this point.
-                        continue;
+                        Box::new(future::ok(Step::Restart))
                     }
                     Some(ancestor_block) => {
                         // We stopped one block short, so we'll compare the parent hash to the
@@ -413,118 +429,142 @@ where
                             // due to the race conditions previously mentioned,
                             // so instead we will advance the subgraph ptr by one block.
                             // Note that ancestor_block is a child of subgraph_ptr.
-                            Step::ToDescendants(vec![ancestor_block.into()])
+                            Box::new(future::ok(Step::ToDescendants(vec![ancestor_block.into()])))
                         } else {
                             // The subgraph ptr is not on the main chain.
                             // We will need to step back (possibly repeatedly) one block at a time
                             // until we are back on the main chain.
-                            Step::ToParent
+                            Box::new(future::ok(Step::ToParent))
                         }
                     }
                 }
             }
         };
 
-        // We now know where to take the subgraph ptr.
-        match step {
-            Step::ToParent => {
-                // We would like to move to the parent of the current block.
-                // This means we need to revert this block.
+        Box::new(step_future.and_then(move |step| -> Box<Future<Item=_,Error=_>> {
+            //let runtime_hosts = runtime_hosts.clone();
 
-                // First, we need the block data.
-                let block = {
-                    // Try locally first. Otherwise, get block from Ethereum node.
-                    let block_from_store = store.lock().unwrap().block(subgraph_ptr.hash)?;
-                    if let Some(block) = block_from_store {
-                        Ok(block)
-                    } else {
-                        eth_adapter
+            // We now know where to take the subgraph ptr.
+            match step {
+                Step::Restart => Box::new(future::ok(future::Loop::Continue(()))),
+                Step::Exit => Box::new(future::ok(future::Loop::Break(()))),
+                Step::ToParent => {
+                    // We would like to move to the parent of the current block.
+                    // This means we need to revert this block.
+
+                    // First, we need the block data.
+                    let block_future: Box<Future<Item=_,Error=_>> = {
+                        // Try locally first. Otherwise, get block from Ethereum node.
+                        let block_from_store = store.lock().unwrap().block(subgraph_ptr.hash).unwrap();
+                        if let Some(block) = block_from_store {
+                            Box::new(future::ok(block))
+                        } else {
+                            Box::new(eth_adapter
+                                .lock()
+                                .unwrap()
+                                .block_by_hash(subgraph_ptr.hash)
+                            )
+                        }
+                    };
+                    Box::new(block_future.and_then(|block| {
+                        // Revert entity changes from this block, and update subgraph ptr.
+                        future::result(store
                             .lock()
                             .unwrap()
-                            .block_by_hash(subgraph_ptr.hash)
-                            .wait()
-                    }
-                }?;
-
-                // Revert entity changes from this block, and update subgraph ptr.
-                store
-                    .lock()
-                    .unwrap()
-                    .revert_block(subgraph_id.clone(), block)?;
-
-                // At this point, the loop repeats, and we try to move the subgraph ptr another
-                // step in the right direction.
-            }
-            Step::ToDescendants(descendant_blocks) => {
-                let descendant_block_count = descendant_blocks.len();
-                debug!(
-                    logger,
-                    "Advancing subgraph ptr to process {} block(s)...", descendant_block_count
-                );
-
-                // Advance the subgraph ptr to each of the specified descendants.
-                let mut subgraph_ptr = subgraph_ptr;
-                for descendant_block in descendant_blocks.into_iter() {
-                    // First, check if there are blocks between subgraph_ptr and descendant_block.
-                    let descendant_parent_ptr = EthereumBlockPointer::to_parent(&descendant_block);
-                    if subgraph_ptr != descendant_parent_ptr {
-                        // descendant_block is not a direct child.
-                        // Therefore, there are blocks that are irrelevant to this subgraph that we can skip.
-
-                        // Update subgraph_ptr in store to skip the irrelevant blocks.
-                        store.lock().unwrap().set_block_ptr_with_no_changes(
-                            subgraph_id.clone(),
-                            subgraph_ptr,
-                            descendant_parent_ptr,
-                        )?;
-                    }
-
-                    // subgraph ptr is now the direct parent of descendant_block
-                    subgraph_ptr = descendant_parent_ptr;
-                    let descendant_ptr = EthereumBlockPointer::from(descendant_block.clone());
-
-                    // TODO future enhancement: load a recent history of blocks before running mappings
-
-                    // Next, we will determine what relevant events are contained in this block.
-                    let events = eth_adapter
-                        .lock()
-                        .unwrap()
-                        .get_events_in_block(descendant_block, event_filter.clone())
-                        .collect()
-                        .wait()?;
-
+                            .revert_block(subgraph_id.clone(), block)
+                            .map_err(Error::from)
+                            .map(|()| {
+                                // At this point, the loop repeats, and we try to move the subgraph ptr another
+                                // step in the right direction.
+                                future::Loop::Continue(())
+                            })
+                        )
+                    }))
+                }
+                Step::ToDescendants(descendant_blocks) => {
+                    let descendant_block_count = descendant_blocks.len();
                     debug!(
                         logger,
-                        "Processing block #{}. {} event(s) are relevant to this subgraph.",
-                        descendant_ptr.number,
-                        events.len()
+                        "Advancing subgraph ptr to process {} block(s)...", descendant_block_count
                     );
 
-                    // Then, we will distribute each event to each of the runtime hosts.
-                    // The execution order is important to ensure entity data is produced
-                    // deterministically.
-                    // TODO runtime host order should be deterministic
-                    // TODO use a single StoreTransaction, use commit instead of set_block_ptr
-                    events.iter().for_each(|event| {
-                        runtime_hosts
-                            .iter_mut()
-                            .for_each(|host| host.process_event(event.clone()).wait().unwrap())
-                    });
-                    store.lock().unwrap().set_block_ptr_with_no_changes(
-                        subgraph_id.clone(),
-                        subgraph_ptr,
-                        descendant_ptr,
-                    )?;
-                    subgraph_ptr = descendant_ptr;
+                    // Advance the subgraph ptr to each of the specified descendants.
+                    Box::new(stream::iter_ok(descendant_blocks.into_iter())
+                        .fold(subgraph_ptr, move |mut subgraph_ptr, descendant_block| {
+                            // First, check if there are blocks between subgraph_ptr and
+                            // descendant_block.
+                            let descendant_parent_ptr = EthereumBlockPointer::to_parent(&descendant_block);
+                            if subgraph_ptr != descendant_parent_ptr {
+                                // descendant_block is not a direct child.
+                                // Therefore, there are blocks that are irrelevant to this subgraph
+                                // that we can skip.
 
-                    debug!(logger, "Done processing block #{}.", descendant_ptr.number);
+                                // Update subgraph_ptr in store to skip the irrelevant blocks.
+                                store.lock().unwrap().set_block_ptr_with_no_changes(
+                                    subgraph_id.clone(),
+                                    subgraph_ptr,
+                                    descendant_parent_ptr,
+                                ).unwrap();
+                            }
+
+                            // subgraph ptr is now the direct parent of descendant_block
+                            subgraph_ptr = descendant_parent_ptr;
+                            let descendant_ptr = EthereumBlockPointer::from(descendant_block.clone());
+
+                            // TODO future enhancement: load a recent history of blocks before running mappings
+
+                            // Next, we will determine what relevant events are contained in this block.
+                            eth_adapter
+                                .lock()
+                                .unwrap()
+                                .get_events_in_block(descendant_block, event_filter.clone())
+                                .collect() // don't start processing until we have them all loaded
+                                .from_err()
+                                .and_then(move |events| {
+                                    debug!(
+                                        logger,
+                                        "Processing block #{}. {} event(s) are relevant to this subgraph.",
+                                        descendant_ptr.number,
+                                        events.len()
+                                    );
+
+                                    // Then, we will distribute each event to each of the runtime hosts.
+                                    // The execution order is important to ensure entity data is produced
+                                    // deterministically.
+                                    // TODO runtime host order should be deterministic
+                                    // TODO use a single StoreTransaction, use commit instead of set_block_ptr
+                                    //let runtime_hosts = runtime_hosts.clone();
+                                    //let runtime_hosts_locked = runtime_hosts.read().unwrap();
+                                    stream::iter_ok(events)
+                                        .for_each(|event| {future::ok(())
+                                            //stream::iter_ok(runtime_hosts_locked.iter())
+                                                //.for_each(|host| host.process_event(event.clone()))
+                                        })
+                                        .map_err(|_: Error| Error::from(::std::str::from_utf8(&[]).unwrap_err()))
+                                        .map(|()| {
+                                            store.lock().unwrap().set_block_ptr_with_no_changes(
+                                                subgraph_id.clone(),
+                                                subgraph_ptr,
+                                                descendant_ptr,
+                                            ).unwrap();
+                                            let subgraph_ptr = descendant_ptr;
+
+                                            debug!(logger, "Done processing block #{}.", descendant_ptr.number);
+
+                                            subgraph_ptr
+                                        })
+                                })
+                        })
+                        .map(|_| {
+                            debug!(logger, "Processed {} block(s).", descendant_block_count);
+
+                            // At this point, the loop repeats, and we try to move the subgraph ptr
+                            // another step in the right direction.
+                            future::Loop::Continue(())
+                        }))
                 }
-
-                debug!(logger, "Processed {} block(s).", descendant_block_count);
-
-                // At this point, the loop repeats, and we try to move the subgraph ptr another
-                // step in the right direction.
             }
-        }
-    }
+        })
+        )
+    })
 }
