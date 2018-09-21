@@ -477,4 +477,133 @@ impl StoreTrait for Store {
         // Return the subscription ID and entity change stream
         Box::new(receiver)
     }
+
+    fn transact_against_block_stream(
+        &mut self,
+        operations: Vec<EntityOperation>,
+        block_stream_info: BlockStreamInfo,
+        block_stream_ptr: EthereumBlockPointer,
+    ) -> Result<(), failure::Error> {
+
+        let sorted_operations = operations.sort_unstable_by_key(|k| (k.subgraph, k.entity, k.id));
+
+        //Roll up all entity operations for a single entity into a single operation
+
+
+        // Create hashmaps for operations to be done and to keep track of whether an entitis that have
+        // been deleted or touched
+        let mut entity_operations = HashMap::new();
+        let mut entity_state= HashMap::new();
+        // Loop through EntityOperations in reverse,
+        //      -Add Remove operation if Remove operations has not been seen yet for the Entity
+        //      -Add Set operation if specific entity attribute hasn't been seen
+        //          and Delete operation hasn't been seen yet for the Entity
+        for i in (0 .. operations.len()).rev() {
+            match operations[i] {
+                EntityOperation::Set(o) => {
+                    for (attribute, value) in o.data {
+                        match entity_operations.entry(EntityAttribute { subgraph, entity, id, attribute}) {
+                            Entry::Occupied(_) => (),
+                            Entry::Vacant(entity_operation_slot) => {
+                                match entity_state.entry(format!("{}_{}_{}", o.subraph, o.entity, o.id)) {
+                                    Entry::Occupied(previous_entity_operation) => {
+                                        if previous_entity_operation.get() == 0 {
+                                            entity_operation_slot.insert(value);
+                                        }
+                                    },
+                                    Entry::Vacant(deleted_operation_slot) => {
+                                        entity_operation_slot.insert(value);
+                                        entity_state_slot.insert(0)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                EntityOperation::Remove(o) => {
+                    match entity_operations.entry(EntityAttribute { subgraph, entity, id, attribute: "remove".to_String()}) {
+                        Entry::Occupied(o) => (),
+                        Entry::Vacant(v) => {
+                                v.insert(0);
+                                entity_state.insert(format!("{}_{}_{}", o.subraph, o.entity, o.id), 1);
+                        }
+                    }
+                }
+            }
+        }
+
+
+        // Gather back into operations, use reverse loop to get back into correct order
+        let mut current_key: StoreKey;
+        let mut current_map: HashMap<Attribute, Value> = HashMap::new();
+        let mut current_entity: Entity;
+        let mut operations_to_do = Vec<EntityOperation>;
+        for (entity_attribute, entity_value) in entity_operations.rev() {
+            if StoreKey { subgraph: entity_attribute.subgraph, entity: entity_attribute.entity, id: entity_attribute.id} == key {
+                let new_entity = Entity::new();
+                new_entity.0.insert(entity_attribute.attribute, entity_value);
+                current_entity.merge(new_entity);
+            } else {
+                if operations_to_do
+                operations_to_do.push({
+
+                })
+                current_entity = Entity::new();
+                current_entity.0.insert(entity_attribute.attribute, entity_value);
+                current_key = StoreKey { subgraph: entity_attribute.subgraph, entity: entity_attribute.entity , id: entity_attribute.id};
+            }
+        }
+
+
+
+        let conn = self.conn.lock().unwrap();
+        // Setup atomic transaction group for all operations
+        conn.transaction::<usize, result::Error, _>(|| {
+            use db_schema::entities::dsl::*;
+
+            // loop through processed EntityOperations vector and perform set and remove operations
+            for operations in operations_to_do {
+                match operation {
+                    EntityOperation::Set(o) => {
+                        self.set(StoreKey { subgraph: o.subgraph, entity: o.entity, id: o.id}, o.data, "block_hash?".to_string())
+                    },
+                    EntityOperation::Remove(o) => {
+                        self.delete(StoreKey { subgraph: o.subgraph, entity: o.entity, id: o.id}, "block_hash?".to_string())
+                    }
+                }
+            }
+        }).map(|_| ())
+        .map_err(|_| ())
+    }
+}
+
+#[derive(Hash, Eq, PartialEq, Debug)]
+struct EntityAttribute {
+    subgraph: String,
+    entity: String,
+    id: String,
+    attribute: Attribute
+}
+
+impl EntityAttribute {
+    /// Create a new Viking.
+    fn new(subgraph: String, entity: String, id: String, attribute: Attribute) -> EntityAttribute {
+        EntityAttribute { subgraph, entity, id, attribute}
+    }
+}
+
+/// An entity operation that can be transacted into the store.
+#[derive(Clone, Debug)]
+pub enum EntityOperation {
+    Set {
+        subgraph: String,
+        entity: String,
+        id: String,
+        data: Entity,
+    },
+    Remove {
+        subgraph: String,
+        entity: String,
+        id: String,
+    },
 }
