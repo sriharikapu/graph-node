@@ -3,8 +3,8 @@ use futures::Future;
 use futures::Stream;
 use web3::types::{Block, Transaction, H256};
 
+use components::ethereum::EthereumBlockPointer;
 use data::store::*;
-use graph::components::ethereum::{EthereumBlockPointer};
 use std::fmt;
 
 /// Key by which an individual entity in the store can be accessed.
@@ -108,7 +108,6 @@ pub struct EntityChange {
 /// A stream of entity change events.
 pub type EntityChangeStream = Box<Stream<Item = EntityChange, Error = ()> + Send>;
 
-
 /// An entity operation that can be transacted into the store.
 #[derive(Clone, Debug)]
 pub enum EntityOperation {
@@ -206,5 +205,5 @@ pub trait Store: BasicStore + BlockStore + Send {
         operations: Vec<EntityOperation>,
         block_stream_info: BlockStreamInfo,
         block_stream_ptr: EthereumBlockPointer,
-    ) -> Result<(), failure::Error>;
+    ) -> Result<(), Error>;
 }
