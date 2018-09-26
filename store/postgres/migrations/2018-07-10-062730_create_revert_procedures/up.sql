@@ -247,13 +247,14 @@ $$ LANGUAGE plpgsql;
 * Rerun all of an entities changes that come after the row store events related to that block
 * Parameters: block_hash, subgraph
 **************************************************************/
-CREATE OR REPLACE FUNCTION revert_block(block_hash_to_revert VARCHAR, subgraph_id VARCHAR)
+CREATE OR REPLACE FUNCTION revert_block(block_hash_to_revert VARCHAR, target_block_hash VARCHAR, VARCHAR, subgraph_id VARCHAR)
     RETURNS VOID AS
 $$
 DECLARE
     event_row RECORD;
     entity_row RECORD;
 BEGIN
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
     FOR event_row IN
         -- Get all events associated with the given block
         SELECT
@@ -270,6 +271,13 @@ BEGIN
     LOOP
         PERFORM revert_transaction(event_row.event_id::integer);
     END LOOP;
+    WITH block AS (
+      SELECT hash, number FROM ethereum_blocks eb
+          WHERE  eb.hash = target_block_hash
+    )
+    UPDATE subgraph
+    SET latest_block_hash = block.hash, latest_block_number = block.number
+    WHERE subgraph.id = subgraph_id;
 END;
 $$ LANGUAGE plpgsql;
 
