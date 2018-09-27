@@ -2,6 +2,7 @@ use futures::future;
 use futures::prelude::*;
 use graph::ethabi::Token;
 use std::collections::HashSet;
+use std::fmt::{Debug, Display};
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -370,6 +371,8 @@ where
         &self,
         call: EthereumContractCall,
     ) -> Box<Future<Item = Vec<Token>, Error = EthereumContractCallError>> {
+        let eth_client = self.eth_client.clone();
+
         // Emit custom error for type mismatches.
         for (token, kind) in call
             .args
@@ -384,53 +387,61 @@ where
             }
         }
 
-        // Obtain a handle on the Ethereum client
-        let eth_client = self.eth_client.clone();
+        with_retry(self.logger.clone(), move || {
+            let eth_client = eth_client.clone();
 
-        // Prepare for the function call, encoding the call parameters according
-        // to the ABI
-        let call_address = call.address;
-        let call_data = call.function.encode_input(&call.args).unwrap();
-        let block_id = call.block_id.clone();
+            // Prepare for the function call, encoding the call parameters according
+            // to the ABI
+            let call_address = call.address;
+            let call_data = call.function.encode_input(&call.args).unwrap();
+            let call_function = call.function.clone();
+            let block_id = call.block_id.clone();
 
-        Box::new(
-            // Resolve the block ID into a block number
-            eth_client.eth().block(block_id.clone())
-                .map_err(EthereumContractCallError::from)
-                .and_then(move |block_opt| {
-                    block_opt.ok_or(EthereumContractCallError::Error(
-                        format_err!("could not find block with id {:?}", block_id)
-                    ))
-                })
-                .and_then(move |block| {
-                    // Make the actual function call
-                    Self::call(
-                        eth_client.eth(),
-                        call_address,
-                        Bytes(call_data),
-                        block
-                            .number
-                            .map(|number| number.as_u64())
-                            .map(BlockNumber::Number),
-                    ).map_err(EthereumContractCallError::from)
-                })
-                // Decode the return values according to the ABI
-                .and_then(move |output| {
-                    call.function
-                        .decode_output(&output.0)
-                        .map_err(EthereumContractCallError::from)
-                }),
-        )
+            // XXX Inject error 50% of the time
+            if H256::random()[0] > 127 {
+                return Box::new(future::err(EthereumContractCallError::Error(format_err!("contract_call err"))));
+            }
+
+            Box::new(
+                // Resolve the block ID into a block number
+                eth_client.eth().block(block_id.clone())
+                    .map_err(EthereumContractCallError::from)
+                    .and_then(move |block_opt| {
+                        block_opt.ok_or(EthereumContractCallError::Error(
+                            format_err!("could not find block with id {:?}", block_id)
+                        ))
+                    })
+                    .and_then(move |block| {
+                        // Make the actual function call
+                        Self::call(
+                            eth_client.eth(),
+                            call_address,
+                            Bytes(call_data),
+                            block
+                                .number
+                                .map(|number| number.as_u64())
+                                .map(BlockNumber::Number),
+                        ).map_err(EthereumContractCallError::from)
+                    })
+                    // Decode the return values according to the ABI
+                    .and_then(move |output| {
+                        call_function
+                            .decode_output(&output.0)
+                            .map_err(EthereumContractCallError::from)
+                    }),
+            )
+        })
     }
 }
 
-fn with_retry<'a, I, T>(
+fn with_retry<'a, I, T, E>(
     logger: Logger,
     try_it: T,
-) -> Box<Future<Item = I, Error = Error> + Send + 'a>
+) -> Box<Future<Item = I, Error = E> + Send + 'a>
 where
     I: Send + 'a,
-    T: Fn() -> Box<Future<Item = I, Error = Error> + Send + 'a> + Send + 'a,
+    T: Fn() -> Box<Future<Item = I, Error = E> + Send + 'a> + Send + 'a,
+    E: Debug + Display + Send + 'a,
 {
     Box::new(future::loop_fn((), move |()| {
         let logger = logger.clone();
@@ -444,7 +455,7 @@ where
                     Some(e) => {
                         if retries_left > 0 {
                             warn!(logger, "Ethereum RPC call failed: {}", e);
-                            warn!(logger, "Retrying...");
+                            warn!(logger, "Retrying (left = {})...", retries_left);
                             retries_left -= 1;
                             Ok(future::Loop::Continue(()))
                         } else {
