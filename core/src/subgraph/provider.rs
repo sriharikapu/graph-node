@@ -46,18 +46,34 @@ where
         // TODO this is not really right when multiple subgraph names have same ID
 
         let self_clone = self.clone();
+        debug!(self_clone.logger, "Deploying saved subgraphs");
 
         future::result(self.store.read_all_subgraph_names()).and_then(
             move |subgraph_names_and_ids| {
                 let self_clone = self_clone.clone();
+
+                debug!(
+                    self_clone.logger,
+                    "Found {} saved subgraph name(s) in store",
+                    subgraph_names_and_ids.len()
+                );
 
                 let subgraph_names_by_id = subgraph_names_and_ids
                     .into_iter()
                     .filter_map(|(name, id_opt)| id_opt.map(move |id| (id, name)))
                     .collect::<HashMap<String, String>>();
 
+                debug!(
+                    self_clone.logger,
+                    "Found {} saved subgraph ID(s) in store",
+                    subgraph_names_by_id.len()
+                );
+
                 stream::iter_ok(subgraph_names_by_id.into_iter()).for_each(move |(id, name)| {
-                    let self_clone = self_clone.clone();
+                    let self_clone1 = self_clone.clone();
+                    let self_clone2 = self_clone.clone();
+
+                    debug!(self_clone.logger, "Resolving subgraph {}", id);
 
                     SubgraphManifest::resolve(
                         name.clone(),
@@ -66,18 +82,24 @@ where
                         },
                         self_clone.resolver.clone(),
                     ).map_err(|e| format_err!("subgraph manifest resolve error: {}", e))
-                    .and_then(
+                    .and_then(move |subgraph| {
+                        debug!(self_clone1.logger, "Validating subgraph schema");
+
                         // Validate the subgraph schema before deploying the subgraph
-                        |subgraph| match validate_schema(&subgraph.schema.document) {
+                        match validate_schema(&subgraph.schema.document) {
                             Err(e) => Err(e),
                             _ => Ok(subgraph),
-                        },
-                    ).and_then(move |mut subgraph| {
-                        let self_clone = self_clone.clone();
+                        }
+                    }).and_then(move |mut subgraph| {
+                        let self_clone = self_clone2.clone();
+
+                        debug!(self_clone.logger, "Add subgraph {} directives", id);
 
                         subgraph
                             .schema
                             .add_subgraph_id_directives(subgraph.id.clone());
+
+                        debug!(self_clone.logger, "Send add events for subgraph {}", id);
 
                         self_clone
                             .send_add_events(subgraph, name.clone())

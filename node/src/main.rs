@@ -360,6 +360,8 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             .expect("Failed to start GraphQL subscription server"),
     );
 
+    info!(logger, "Graph node is ready.");
+
     future::empty()
 }
 
