@@ -42,7 +42,11 @@ use graph_store_postgres::{Store as DieselStore, StoreConfig};
 fn main() {
     let (panic_logger, _panic_guard) = guarded_logger();
     register_panic_hook(panic_logger);
-    tokio::run(future::lazy(|| async_main()))
+    let mut runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+    runtime.block_on_all(future::lazy(|| async_main()));
+//    .expect("Failed to run")
+//    runtime.shutdown_on_idle()
+//        .wait().unwrap();
 }
 
 fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
