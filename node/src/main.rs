@@ -1,5 +1,7 @@
 extern crate clap;
 extern crate env_logger;
+#[macro_use]
+extern crate failure;
 extern crate futures;
 extern crate itertools;
 extern crate reqwest;
@@ -69,31 +71,12 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
                 .help("Location of the Postgres database used for storing entities"),
         )
         .arg(
-            Arg::with_name("ethereum-rpc")
+            Arg::with_name("ethereum-node")
                 .takes_value(true)
-                .required_unless_one(&["ethereum-ws", "ethereum-ipc"])
-                .conflicts_with_all(&["ethereum-ws", "ethereum-ipc"])
-                .long("ethereum-rpc")
+                .required(true)
+                .long("ethereum-node")
                 .value_name("NETWORK_NAME:URL")
-                .help("Ethereum network name (e.g. 'mainnet') and Ethereum RPC endpoint URL, separated by a ':'"),
-        )
-        .arg(
-            Arg::with_name("ethereum-ws")
-                .takes_value(true)
-                .required_unless_one(&["ethereum-rpc", "ethereum-ipc"])
-                .conflicts_with_all(&["ethereum-rpc", "ethereum-ipc"])
-                .long("ethereum-ws")
-                .value_name("NETWORK_NAME:URL")
-                .help("Ethereum network name (e.g. 'mainnet') and Ethereum WebSocket endpoint URL, separated by a ':'"),
-        )
-        .arg(
-            Arg::with_name("ethereum-ipc")
-                .takes_value(true)
-                .required_unless_one(&["ethereum-rpc", "ethereum-ws"])
-                .conflicts_with_all(&["ethereum-rpc", "ethereum-ws"])
-                .long("ethereum-ipc")
-                .value_name("NETWORK_NAME:FILE")
-                .help("Ethereum network name (e.g. 'mainnet') and Ethereum IPC pipe path, separated by a ':'"),
+                .help("Ethereum network name (e.g. 'mainnet') and Ethereum node URL, separated by a ':'"),
         )
         .arg(
             Arg::with_name("ipfs")
@@ -127,9 +110,7 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     let subgraph = matches.value_of("subgraph");
 
     // Obtain the Ethereum parameters
-    let ethereum_rpc = matches.value_of("ethereum-rpc");
-    let ethereum_ipc = matches.value_of("ethereum-ipc");
-    let ethereum_ws = matches.value_of("ethereum-ws");
+    let ethereum_node = matches.value_of("ethereum-node").unwrap();
 
     // Parse rpc port
     let json_rpc_port = matches
@@ -210,37 +191,33 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
 
     let mut subgraph_provider = IpfsSubgraphProvider::new(logger.clone(), ipfs_client.clone());
 
-    // Set up Ethereum transport
-    let (ethereum_network_name, (transport_event_loop, transport)) = ethereum_ipc
-        .map(|s| new_transport(s, &logger, Transport::new_ipc))
-        .or(ethereum_ws.map(|s| new_transport(s, &logger, Transport::new_ws)))
-        .or(ethereum_rpc.map(|s| new_transport(s, &logger, Transport::new_rpc)))
-        .expect("One of --ethereum-ipc, --ethereum-ws or --ethereum-rpc must be provided");
+    // Parse Ethereum node string
+    let (ethereum_network_name, ethereum_node_url) =
+        parse_ethereum_node(ethereum_node).expect("Failed to parse Ethereum node");
+
+    info!(logger, "Connecting to Ethereum...");
+
+    let (transport_loop, ethereum_transport, ethereum_network_identifier) =
+        try_ethereum_transport(&logger, &ethereum_node_url, Transport::new_ipc)
+            .or_else(|_| try_ethereum_transport(&logger, &ethereum_node_url, Transport::new_rpc))
+            .or_else(|_| try_ethereum_transport(&logger, &ethereum_node_url, Transport::new_ws))
+            .expect("failed to connect to Ethereum");
 
     // If we drop the event loop the transport will stop working.
     // For now it's fine to just leak it.
-    std::mem::forget(transport_event_loop);
+    std::mem::forget(transport_loop);
 
-    // Create Ethereum adapter
+    info!(logger, "Connected to Ethereum";
+          "network" => &ethereum_network_name,
+          "node" => &ethereum_node_url);
+
+    // Set up the Ethereum adapter
     let ethereum = Arc::new(graph_datasource_ethereum::EthereumAdapter::new(
         &logger,
         graph_datasource_ethereum::EthereumAdapterConfig {
-            transport: transport.clone(),
+            transport: ethereum_transport.clone(),
         },
     ));
-
-    // Ask Ethereum node for network identifiers
-    info!(logger, "Connecting to Ethereum...");
-    let eth_net_identifiers = match ethereum.net_identifiers().wait() {
-        Ok(net) => {
-            info!(logger, "Connected to Ethereum node.");
-            net
-        }
-        Err(e) => {
-            error!(logger, "Was a valid Ethereum node endpoint provided?");
-            panic!("Failed to connect to Ethereum node: {}", e);
-        }
-    };
 
     // Set up Store
     info!(logger, "Connecting to Postgres"; "url" => &postgres_url);
@@ -250,7 +227,7 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             network_name: ethereum_network_name.to_owned(),
         },
         &logger,
-        eth_net_identifiers,
+        ethereum_network_identifier,
     ));
     let graphql_runner = Arc::new(graph_core::GraphQlRunner::new(&logger, store.clone()));
     let mut graphql_server = GraphQLQueryServer::new(&logger, graphql_runner.clone());
@@ -259,7 +236,7 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     // Create Ethereum block ingestor
     let block_ingestor = graph_datasource_ethereum::BlockIngestor::new(
         store.clone(),
-        transport.clone(),
+        ethereum_transport.clone(),
         50, // ancestor count, which we could make configuable
         logger.clone(),
         Duration::from_millis(500), // polling interval, which we could make configurable
@@ -352,34 +329,65 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     future::empty()
 }
 
-/// Parses a connection string, returns a network name and a Transport.
-fn new_transport<'a, C>(
-    s: &'a str,
-    logger: &Logger,
-    constructor: C,
-) -> (&'a str, (EventLoopHandle, Transport))
-where
-    C: FnOnce(&str) -> (EventLoopHandle, Transport),
-{
-    // Check for common mistakes
-    if s.starts_with("wss://") || s.starts_with("http://") || s.starts_with("https://") {
-        warn!(logger, "Is your Ethereum connection string missing a network name? Try 'mainnet:' + the connection URL.");
+fn parse_ethereum_node<'a>(ethereum_node: &'a str) -> Result<(&'a str, &'a str), Error> {
+    // Check for common Ethereum node mistakes
+    if ethereum_node.starts_with("wss://")
+        || ethereum_node.starts_with("http://")
+        || ethereum_node.starts_with("https://")
+    {
+        format_err!(
+            "Is your Ethereum node string missing a network name? \
+             Try 'mainnet:' + the Ethereum node URL."
+        );
     }
 
-    // Parse string (format is "network_name:url_or_path")
-    let split_at = s.find(':').expect(
-        "A network name must be provided alongside the Ethereum node location. Try 'mainnet:URL'.",
-    );
-    let (name, loc_with_delim) = s.split_at(split_at);
+    // Parse string (format is "NETWORK_NAME:URL")
+    let split_at = ethereum_node.find(':').ok_or(format_err!(
+        "A network name must be provided alongside the \
+         Ethereum node location. Try e.g. 'mainnet:URL'."
+    ))?;
+    let (name, loc_with_delim) = ethereum_node.split_at(split_at);
     let loc = &loc_with_delim[1..];
 
     if name.is_empty() {
-        panic!("Ethereum network name cannot be an empty string");
+        return Err(format_err!(
+            "Ethereum network name cannot be an empty string"
+        ));
     }
 
     if loc.is_empty() {
-        panic!("Ethereum connection location cannot be an empty string");
+        return Err(format_err!("Ethereum node URL cannot be an empty string"));
     }
 
-    (name, constructor(loc))
+    Ok((name, loc))
+}
+
+/// Parses a connection string, returns a network name and a Transport.
+fn try_ethereum_transport<'a, C>(
+    logger: &Logger,
+    node_url: &'a str,
+    constructor: C,
+) -> Result<(EventLoopHandle, Transport, EthereumNetworkIdentifier), Error>
+where
+    C: FnOnce(&str) -> Result<(EventLoopHandle, Transport), Error>,
+{
+    let (event_loop, transport) = constructor(node_url)?;
+
+    // Create a temporary Ethereum adapter for connectivity checking
+    let ethereum = graph_datasource_ethereum::EthereumAdapter::new(
+        &logger,
+        graph_datasource_ethereum::EthereumAdapterConfig {
+            transport: transport.clone(),
+        },
+    );
+
+    // Ask Ethereum node for network identifier
+    match ethereum.net_identifiers().wait() {
+        Ok(network_identifier) => Ok((event_loop, transport, network_identifier)),
+        Err(e) => Err(format_err!(
+            "Is \"{}\" a valid Ethereum URL? Error: {}",
+            node_url,
+            e
+        )),
+    }
 }

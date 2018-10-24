@@ -1,3 +1,4 @@
+use failure::Error;
 use futures::prelude::*;
 use graph::serde_json::Value;
 use jsonrpc_core::types::Call;
@@ -19,31 +20,31 @@ pub enum Transport {
 
 impl Transport {
     /// Creates an IPC transport.
-    pub fn new_ipc(ipc: &str) -> (EventLoopHandle, Self) {
+    pub fn new_ipc(ipc: &str) -> Result<(EventLoopHandle, Self), Error> {
         ipc::Ipc::new(ipc)
             .map(|(event_loop, transport)| (event_loop, Transport::IPC(transport)))
-            .expect("Failed to connect to Ethereum IPC")
+            .map_err(|e| format_err!("{}", e))
     }
 
     /// Creates a WebSocket transport.
-    pub fn new_ws(ws: &str) -> (EventLoopHandle, Self) {
+    pub fn new_ws(ws: &str) -> Result<(EventLoopHandle, Self), Error> {
         ws::WebSocket::new(ws)
             .map(|(event_loop, transport)| (event_loop, Transport::WS(transport)))
-            .expect("Failed to connect to Ethereum WS")
+            .map_err(|e| format_err!("{}", e))
     }
 
     /// Creates a JSON-RPC over HTTP transport.
     ///
     /// Note: JSON-RPC over HTTP doesn't always support subscribing to new
     /// blocks (one such example is Infura's HTTP endpoint).
-    pub fn new_rpc(rpc: &str) -> (EventLoopHandle, Self) {
+    pub fn new_rpc(rpc: &str) -> Result<(EventLoopHandle, Self), Error> {
         let max_parallel_http: usize = env::var_os("ETHEREUM_RPC_MAX_PARALLEL_REQUESTS")
             .map(|s| s.to_str().unwrap().parse().unwrap())
             .unwrap_or(64);
 
         http::Http::with_max_parallel(rpc, max_parallel_http)
             .map(|(event_loop, transport)| (event_loop, Transport::RPC(transport)))
-            .expect("Failed to connect to Ethereum RPC")
+            .map_err(|e| format_err!("{}", e))
     }
 }
 
