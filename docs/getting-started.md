@@ -73,7 +73,7 @@ Now let's dig in!
 ## 1 Defining The Subgraph 
 When we refer to a subgraph we are referring to the whole project. Once deployed to the decentralized network, it will form a part of a global graph of blockchain data.
 
-You can now create an empty repository to start the project. We will add the first file in section 3.1. 
+You can now create an empty repository to start the project. We will add the first file in section 1.1. 
 
 ### 1.1 Define The Data Sources and Create a Manifest
 
@@ -109,7 +109,7 @@ dataSources:
 We will point out a few important facts from this example that are supplementary to reading the subgraph manifest spec mentioned above:
 
 * The name `ERC721` under `source > abi` must match the name of the displayed underneath `abis >name`.
-* The event `Transfer(address,address,uint)` under `eventHandlers` must exactly match what is in the ABI. The name `handleTransfer` under `eventHandlers:handler` must exactly match the name of the mapping function (mappings will be explained in a few sections). 
+* The event `Transfer(address,address,uint256)` under `eventHandlers` must exactly match what is in the ABI. The name `handleTransfer` under `eventHandlers > handler` must exactly match the name of the mapping function (mappings will be explained in a few sections). 
 * Make sure you have the right contract address under `source > address`. Expecially when you are also deploying on testnets. The contract address may start with or without a `0x` prefix.
 * You can define multiple data sources under dataSources. Within a datasource you can also have multiple `entities` and `events`. See [this subgraph](https://github.com/graphprotocol/decentraland-subgraph/blob/master/subgraph.yaml) for an example.
 * If the Graph CLI outputs 'Failed to copy subgraph files', it probably means you have a typo in the manifest.
@@ -155,7 +155,7 @@ schema:
 
 
 ### 1.3 Graph CLI
-Once you have the `subgraph.yaml` manifest and the `./schema.graphql` file, you are ready to use the Graph CLI to set up the subgraph directory. The Graph CLI is a command line tool that contains helpful commands for deploying the subgraphs. Before continuing with this guide, please go to the [Graph CLI README](https://github.com/graphprotocol/graph-cli/) and follow the instructions up to Step 7 for setting up the subgraph directory.
+Once you have the `subgraph.yaml` manifest and the `./schema.graphql` file, you are ready to use the Graph CLI to set up the subgraph directory. The Graph CLI is a command line tool that contains helpful commands for deploying subgraphs. Before continuing with this guide, please go to the [Graph CLI README](https://github.com/graphprotocol/graph-cli/) and follow the instructions up to Step 7 for setting up the subgraph directory.
 
 Once you run `yarn codegen` as outlined in the Graph CLI README, you are ready to create mappings! What this command does is it looks at the contract ABIs defined in the subgraph manifest, and generates TypeScript types for all of the ABIs (actually AssemblyScript types, but more on that later) for the smart contracts the mappings script will interface with, including the types of public methods and events.
 
