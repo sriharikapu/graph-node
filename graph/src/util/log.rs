@@ -37,15 +37,15 @@ pub fn guarded_logger() -> (slog::Logger, slog_async::AsyncGuard) {
 
 pub fn register_panic_hook(panic_logger: slog::Logger) {
     panic::set_hook(Box::new(move |panic_info| {
-        let panic_payload = panic_info.payload().downcast_ref::<String>();
+        let panic_payload = panic_info.payload().downcast_ref::<&str>().unwrap();
         let panic_location = if let Some(location) = panic_info.location() {
             format!("{}:{}", location.file(), location.line().to_string())
         } else {
             "NA".to_string()
         };
         crit!(panic_logger, "Node error";
-            "error" => panic_payload.clone(),
-            "location" => panic_location.clone()
+            "error" => panic_payload,
+            "location" => panic_location
            );
         match env::var_os("RUST_BACKTRACE") {
             Some(ref val) if val != "0" => {
