@@ -30,6 +30,7 @@ use url::Url;
 
 use graph::components::forward;
 use graph::prelude::{JsonRpcServer as JsonRpcServerTrait, *};
+use graph::tokio_executor;
 use graph::util::log::{guarded_logger, logger, register_panic_hook};
 use graph_core::{SubgraphInstanceManager, SubgraphProvider as IpfsSubgraphProvider};
 use graph_datasource_ethereum::{BlockStreamBuilder, EventLoopHandle, Transport};
@@ -42,16 +43,25 @@ use graph_store_postgres::{Store as DieselStore, StoreConfig};
 fn main() {
     let (panic_logger, _panic_guard) = guarded_logger();
     register_panic_hook(panic_logger);
-    let mut runtime = tokio::runtime::Runtime::new().expect("Failed to create runtime");
-    runtime.block_on_all(future::lazy(|| async_main()));
-//    .expect("Failed to run")
-//    runtime.shutdown_on_idle()
-//        .wait().unwrap();
+    let runtime = tokio::runtime::Runtime::new()
+        .expect("Failed to create runtime");
+
+    tokio_executor::with_default(
+        &mut runtime.executor(),
+        &mut tokio_executor::enter().expect("Multiple executors at once"),
+        |enter| {
+            enter
+                .block_on(future::lazy(|| async_main()))
+                .expect("Failed to run main funtion");
+        },
+    );
+
+    runtime.shutdown_on_idle()
+        .wait().unwrap();
 }
 
 fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
     env_logger::init();
-
     // Setup CLI using Clap, provide general info and capture postgres url
     let matches = App::new("graph-node")
         .version("0.1.0")
@@ -157,7 +167,6 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
         },
     ));
     sentry::integrations::panic::register_panic_handler();
-
     info!(logger, "Starting up");
 
     // Try to create an IPFS client for one of the resolved IPFS addresses
@@ -191,7 +200,6 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             panic!("Could not connect to IPFS");
         }
     };
-
     // Test the IPFS client by getting the version from the IPFS daemon
     let ipfs_test = ipfs_client.version();
     let ipfs_ok_logger = logger.clone();
@@ -352,7 +360,6 @@ fn async_main() -> impl Future<Item = (), Error = ()> + Send + 'static {
             .serve(8001)
             .expect("Failed to start GraphQL subscription server"),
     );
-
     future::empty()
 }
 
