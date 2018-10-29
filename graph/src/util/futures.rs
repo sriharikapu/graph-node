@@ -1,7 +1,7 @@
 use slog::Logger;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::prelude::*;
-use tokio::timer::DeadlineError;
+use tokio::timer::timeout::Error as TimeoutError;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 use tokio_retry::Error as RetryError;
 use tokio_retry::Retry;
@@ -13,7 +13,7 @@ pub fn with_retry<F, R, I, E>(
     logger: Logger,
     operation_name: String,
     try_it: F,
-) -> impl Future<Item = I, Error = DeadlineError<E>> + Send
+) -> impl Future<Item = I, Error = TimeoutError<E>> + Send
 where
     F: Fn() -> R + Send,
     R: Future<Item = I, Error = E> + Send,
@@ -33,7 +33,7 @@ pub fn with_retry_log_after<F, R, I, E>(
     operation_name: String,
     log_after: u64,
     try_it: F,
-) -> impl Future<Item = I, Error = DeadlineError<E>> + Send
+) -> impl Future<Item = I, Error = TimeoutError<E>> + Send
 where
     F: Fn() -> R + Send,
     R: Future<Item = I, Error = E> + Send,
@@ -54,33 +54,31 @@ where
 
         attempt_count += 1;
 
-        try_it()
-            .deadline(Instant::now() + Duration::from_secs(60))
-            .map_err(move |e| {
-                if e.is_elapsed() {
-                    if attempt_count >= log_after {
-                        debug!(
-                            logger,
-                            "Trying again after {} timed out (attempt #{})",
-                            &operation_name,
-                            attempt_count + 1,
-                        );
-                    }
-
-                    e
-                } else {
-                    if attempt_count >= log_after {
-                        debug!(
-                            logger,
-                            "Trying again after {} failed (attempt #{})",
-                            &operation_name,
-                            attempt_count + 1,
-                        );
-                    }
-
-                    e
+        try_it().timeout(Duration::from_secs(60)).map_err(move |e| {
+            if e.is_elapsed() {
+                if attempt_count >= log_after {
+                    debug!(
+                        logger,
+                        "Trying again after {} timed out (attempt #{})",
+                        &operation_name,
+                        attempt_count + 1,
+                    );
                 }
-            })
+
+                e
+            } else {
+                if attempt_count >= log_after {
+                    debug!(
+                        logger,
+                        "Trying again after {} failed (attempt #{})",
+                        &operation_name,
+                        attempt_count + 1,
+                    );
+                }
+
+                e
+            }
+        })
     }).map_err(|e| match e {
         RetryError::OperationError(e) => e,
         RetryError::TimerError(e) => panic!("tokio timer error: {}", e),
@@ -92,7 +90,7 @@ where
 pub fn with_retry_max_retry<F, R, I, E>(
     max_retry_count: usize,
     try_it: F,
-) -> impl Future<Item = I, Error = DeadlineError<E>> + Send
+) -> impl Future<Item = I, Error = TimeoutError<E>> + Send
 where
     F: Fn() -> R + Send,
     R: Future<Item = I, Error = E> + Send,
@@ -106,7 +104,7 @@ where
         .take(max_retry_count);
 
     Retry::spawn(retry_strategy, move || {
-        try_it().deadline(Instant::now() + Duration::from_secs(60))
+        try_it().timeout(Duration::from_secs(60))
     }).map_err(|e| match e {
         RetryError::OperationError(e) => e,
         RetryError::TimerError(e) => panic!("tokio timer error: {}", e),
