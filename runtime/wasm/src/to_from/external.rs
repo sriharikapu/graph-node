@@ -1,10 +1,9 @@
 use ethabi;
-use std::cmp;
 use std::collections::HashMap;
 
 use graph::components::ethereum::{EthereumBlockData, EthereumEventData, EthereumTransactionData};
 use graph::data::store;
-use graph::prelude::{BigInt, BigIntSign};
+use graph::prelude::BigInt;
 use graph::serde_json;
 use graph::web3::types as web3;
 
@@ -264,6 +263,10 @@ impl ToAscObj<AscEthereumBlock> for EthereumBlockData {
             timestamp: heap.asc_new(&BigInt::from_unsigned_u256(&self.timestamp)),
             difficulty: heap.asc_new(&BigInt::from_unsigned_u256(&self.difficulty)),
             total_difficulty: heap.asc_new(&BigInt::from_unsigned_u256(&self.total_difficulty)),
+            size: self
+                .size
+                .map(|size| heap.asc_new(&BigInt::from_unsigned_u256(&size)))
+                .unwrap_or_else(|| AscPtr::null()),
         }
     }
 }
